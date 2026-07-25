@@ -613,8 +613,14 @@ def load_mcp_and_build_kwargs(
 # =============================================================================
 
 
-def _get_default_backend():
-    """Build the default composite backend from current paths."""
+def _get_default_backend(*, guard_dangerous: bool | None = None):
+    """Build the default composite backend from current paths.
+
+    ``guard_dangerous`` — when ``None`` (default) follows ``cfg.auto_approve``;
+    the two research async sub-agent graphs (``writing-agent`` /
+    ``data-analysis-agent``) pass ``True`` because their remote thread has no
+    approval path at all (see ``subagents/_factory._GUARDED_ASYNC_SUBAGENTS``).
+    """
     from deepagents.backends import CompositeBackend
 
     from .backends import (
@@ -624,6 +630,8 @@ def _get_default_backend():
     )
 
     cfg = _ensure_config()
+    if guard_dangerous is None:
+        guard_dangerous = cfg.auto_approve
     workspace_dir = str(_paths_mod.WORKSPACE_ROOT)
     set_active_workspace(workspace_dir)
     memory_dir = str(_paths_mod.MEMORIES_DIR)
@@ -637,7 +645,7 @@ def _get_default_backend():
         virtual_mode=True,
         timeout=cfg.sandbox_execute_timeout,
         dangerous=cfg.dangerous_mode,
-        guard_dangerous=cfg.auto_approve,
+        guard_dangerous=guard_dangerous,
     )
     sk_backend = MergedSkillsBackend(
         primary_dir=user_skills_dir,

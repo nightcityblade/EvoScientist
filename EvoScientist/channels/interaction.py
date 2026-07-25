@@ -210,21 +210,22 @@ def config_auto_approve(action_requests: list[dict]) -> bool:
     """Whether config rules alone clear every action request.
 
     Returns True if no manual approval is needed via config: the global
-    ``auto_approve`` flag, non-execute tools, or a ``shell_allow_list``
-    match on every shell command. Fail-closed on config load errors.
+    ``auto_approve`` flag, non-execute tools, or every shell command
+    resolving to :attr:`~EvoScientist.backends.ActionDecision.APPROVE` via
+    :func:`~EvoScientist.backends.resolve_action_decision` (token-boundary
+    ``shell_allow_list`` match, dangerous commands never auto-cleared).
+    Fail-closed on config load errors.
     """
     if not action_requests:
         return True
 
     try:
+        from ..backends import ActionDecision, resolve_action_decision
         from ..config.settings import HITL_SHELL_TOOLS, load_config
 
         cfg = load_config()
     except Exception:
         return False  # fail-closed
-
-    if cfg.auto_approve:
-        return True
 
     shell_allow_list = (
         [s.strip() for s in cfg.shell_allow_list.split(",") if s.strip()]
@@ -233,13 +234,20 @@ def config_auto_approve(action_requests: list[dict]) -> bool:
     )
 
     for req in action_requests:
+        if not isinstance(req, dict):
+            return False  # malformed request — never auto-clear
         name = req.get("name", "")
         if name not in HITL_SHELL_TOOLS:
             continue
         args = req.get("args", {})
         command = args.get("command", "") if isinstance(args, dict) else ""
-        cmd = command.strip()
-        if not any(cmd.startswith(prefix) for prefix in shell_allow_list):
+        verdict = resolve_action_decision(
+            command,
+            auto_approve=cfg.auto_approve,
+            dangerous_mode=cfg.dangerous_mode,
+            allow_list=shell_allow_list,
+        )
+        if verdict.decision is not ActionDecision.APPROVE:
             return False
     return True
 
