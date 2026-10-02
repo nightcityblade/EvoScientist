@@ -419,6 +419,12 @@ class LangGraphServerThreadStore(ThreadStore):
         return cloned_thread_id
 
 
+def _event_data(event: Mapping[str, Any]) -> Mapping[str, object] | None:
+    """Return the data mapping from a raw server event, when present."""
+    params = _as_raw_map(event.get("params"))
+    return _as_raw_map(params.get("data")) if params is not None else None
+
+
 @dataclass(slots=True)
 class _ServerSubagentTracker:
     """Infer subagent start/end events from LangGraph server namespaces."""
@@ -434,8 +440,7 @@ class _ServerSubagentTracker:
             events.extend(self._ensure_registered(namespace[:1], tool_call_id=None))
 
         method = event.get("method")
-        params = _as_raw_map(event.get("params"))
-        data = _as_raw_map(params.get("data")) if params is not None else None
+        data = _event_data(event)
         if data is None:
             return events
 
@@ -1070,6 +1075,16 @@ class LangGraphServerGateway:
                     raw_event = _as_raw_map(event)
                     if raw_event is None:
                         continue
+                    if raw_event.get("method") == "lifecycle" and not _event_namespace(
+                        raw_event
+                    ):
+                        data = _event_data(raw_event)
+                        if data is not None and data.get("event") == "failed":
+                            run_completed = True
+                            error = data.get("error")
+                            raise RuntimeError(
+                                f"Run errored: {error}" if error else "Run errored"
+                            )
                     for selection_event in self._deliver_custom_middleware_events(
                         raw_event
                     ):

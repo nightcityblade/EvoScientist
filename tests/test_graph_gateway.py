@@ -2179,6 +2179,84 @@ async def test_langgraph_server_gateway_clears_stuck_state_after_run_failure():
     ]
 
 
+@pytest.mark.parametrize(
+    ("failure_data", "message"),
+    [
+        ({"event": "failed", "error": "model failed"}, "Run errored: model failed"),
+        ({"event": "failed"}, "Run errored"),
+    ],
+)
+async def test_langgraph_server_gateway_root_failure_is_not_completed(
+    failure_data, message
+):
+    stream = FakeLangGraphThreadStream(
+        "abc12345",
+        events=[
+            {
+                "method": "lifecycle",
+                "params": {
+                    "namespace": [],
+                    "data": failure_data,
+                },
+            }
+        ],
+    )
+    threads = FakeLangGraphThreadsClient(
+        states={"abc12345": {"values": {}, "next": ("model",)}},
+        streams={"abc12345": stream},
+    )
+    client = FakeLangGraphClient(threads)
+    client.runs = SimpleNamespace(
+        list=AsyncMock(return_value=[]), cancel_many=AsyncMock()
+    )
+    gateway = LangGraphServerGateway(LangGraphServerThreadStore(client=client))
+    events = gateway.stream_events(RunRequest(message="hi", thread_id="abc12345"))
+
+    assert await anext(events) == {
+        "type": "error",
+        "message": message,
+    }
+    with pytest.raises(RuntimeError, match=message):
+        await anext(events)
+    assert threads.state_updates == [("abc12345", None, "__end__")]
+    client.runs.list.assert_not_awaited()
+
+
+async def test_langgraph_server_gateway_namespaced_failure_does_not_abort_run():
+    stream = FakeLangGraphThreadStream(
+        "abc12345",
+        events=[
+            {
+                "method": "lifecycle",
+                "params": {
+                    "namespace": ["subagent:one"],
+                    "data": {"event": "failed", "error": "subagent failed"},
+                },
+            },
+            {
+                "method": "lifecycle",
+                "params": {"namespace": [], "data": {"event": "completed"}},
+            },
+        ],
+    )
+    threads = FakeLangGraphThreadsClient(
+        states={"abc12345": {"values": {}, "next": ()}},
+        streams={"abc12345": stream},
+    )
+    client = FakeLangGraphClient(threads)
+    gateway = LangGraphServerGateway(LangGraphServerThreadStore(client=client))
+
+    events = [
+        event
+        async for event in gateway.stream_events(
+            RunRequest(message="hi", thread_id="abc12345")
+        )
+    ]
+
+    assert events[-1]["type"] == "done"
+    assert threads.state_updates == []
+
+
 async def test_langgraph_server_gateway_repairs_state_when_consumer_closes_after_error_event():
     """A consumer that stops iterating once it has the error event triggers
     GeneratorExit at the yield - the repair must already have run."""
