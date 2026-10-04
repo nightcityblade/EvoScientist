@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
+from functools import wraps
 from pathlib import Path
 
 import httpx
@@ -887,6 +888,24 @@ def _packaged_langgraph_config() -> Path:
 # =============================================================================
 
 
+def _cleanup_failed_start(func):
+    """Stop a newly spawned process when startup does not return normally."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        previous_process = _PROCESS
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            spawned_process = _PROCESS
+            if spawned_process is not None and spawned_process is not previous_process:
+                stop_langgraph_dev(spawned_process)
+            raise
+
+    return wrapper
+
+
+@_cleanup_failed_start
 def start_langgraph_dev(
     workspace_dir: Path | None = None,
     *,
@@ -930,7 +949,7 @@ def start_langgraph_dev(
             is missing.
         RuntimeError: If langgraph dev exits early or never becomes healthy.
     """
-    global _PROCESS
+    global _PROCESS, _PROCESS_WORKSPACE, _PROCESS_DEPLOY_MODE
 
     exe = _langgraph_exe()
     if exe is None:
@@ -1137,6 +1156,9 @@ def start_langgraph_dev(
             env=sub_env,
             **_spawn_kwargs,
         )
+        _PROCESS = proc
+        _PROCESS_WORKSPACE = workspace_dir
+        _PROCESS_DEPLOY_MODE = deploy_mode
     finally:
         # The child has its own copy of the fd; closing ours prevents an
         # accumulating leak across restarts. Run even if Popen raises.
@@ -1156,11 +1178,6 @@ def start_langgraph_dev(
         # same python.
         agent_python=agent_python(),
     )
-    global _PROCESS_WORKSPACE, _PROCESS_DEPLOY_MODE
-    _PROCESS = proc
-    _PROCESS_WORKSPACE = workspace_dir
-    _PROCESS_DEPLOY_MODE = deploy_mode
-
     # langgraph dev cold-starts in ~10-15s normally; first-time npx-based MCP
     # servers can push this to 30-60s while npm fetches packages, so the budget
     # is generous. Subsequent runs are much faster thanks to npm cache.

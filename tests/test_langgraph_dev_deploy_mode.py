@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -381,6 +382,25 @@ def test_a_failing_node_check_does_not_block_the_spawn(
     with pytest.raises(_PopenAbort):
         manager.start_langgraph_dev(workspace_dir=tmp_path, port=16177)
     assert "env" in captured
+
+
+def test_interrupt_during_health_wait_cleans_up(monkeypatch, tmp_path, runtime_paths):
+    _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    monkeypatch.setattr(manager, "_PROCESS", None)
+    proc = MagicMock(pid=4242)
+    proc.poll.side_effect = [None, 0]
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_kw: proc)
+    monkeypatch.setattr(
+        manager,
+        "is_langgraph_dev_running",
+        MagicMock(side_effect=[False, KeyboardInterrupt()]),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
+
+    assert manager._PROCESS is None
+    assert not runtime_paths.pid_file.exists()
+    assert not runtime_paths.workspace_sidecar.exists()
 
 
 def test_start_records_the_agent_python_in_the_sidecar(
